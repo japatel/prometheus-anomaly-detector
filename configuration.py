@@ -29,6 +29,12 @@ class Configuration:
             "Authorization": "bearer " + os.getenv("FLT_PROM_ACCESS_TOKEN")
         }
 
+    # example basic passed as a header
+    if os.getenv("FLT_PROM_ACCESS_BASIC"):
+        prom_connect_headers = {
+            "Authorization": "Basic " + os.getenv("FLT_PROM_ACCESS_BASIC")
+        }
+
     # list of metrics that need to be scraped and predicted
     # multiple metrics can be separated with a ";"
     # if a metric configuration matches more than one timeseries,
@@ -45,6 +51,13 @@ class Configuration:
     # every time new data is added, it will truncate the data that is out of this range.
     rolling_training_window_size = parse_timedelta(
         "now", os.getenv("FLT_ROLLING_TRAINING_WINDOW_SIZE", "3d")
+    )
+
+    # current data window size is the time window from now where the current data value
+    # will be found
+    # default is 5 minutes
+    current_data_window_size = parse_timedelta(
+        "now", os.getenv("FLT_CURRENT_DATA_WINDOW_SIZE", "5m")
     )
 
     # How often should the anomaly detector retrain the model (in minutes)
