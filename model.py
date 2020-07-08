@@ -53,7 +53,9 @@ class MetricPredictor:
         forecast = forecast[["timestamp", "yhat", "yhat_lower", "yhat_upper"]]
         forecast = forecast.set_index("timestamp")
         self.predicted_df = forecast
+
         _LOGGER.debug(forecast)
+        _LOGGER.info(forecast.memory_usage(deep=True))
 
     def predict_value(self, prediction_datetime):
         """Return the predicted value of the metric for the prediction_datetime."""
