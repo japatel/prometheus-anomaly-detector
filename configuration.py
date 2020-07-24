@@ -2,6 +2,9 @@
 import os
 import logging
 from prometheus_api_client.utils import parse_datetime, parse_timedelta
+import model_lstm as model_lstm
+import model as model_prophet
+import model_fourier as model_fourier
 
 if os.getenv("FLT_DEBUG_MODE", "False") == "True":
     LOGGING_LEVEL = logging.DEBUG  # Enable Debug mode
@@ -14,6 +17,31 @@ logging.basicConfig(
 # set up logging
 _LOGGER = logging.getLogger(__name__)
 
+model_module_map = {}
+
+try: 
+    _LOGGER.debug("Loading Prophet model")
+    import model as model_prophet
+    model_module_map["prophet"] = model_prophet
+except ImportError:
+    pass
+
+try: 
+    _LOGGER.debug("Loading LSTM model")
+    import model_lstm as model_lstm
+    model_module_map["lstm"] = model_lstm
+except ImportError:
+    pass
+
+try: 
+    _LOGGER.debug("Loading fourier model")
+    import model_fourier as model_fourier
+    model_module_map["fourier"] = model_fourier
+except ImportError:
+    pass
+
+if len(model_module_map) == 0:
+    raise Exception("No models loaded. At least one model should be loaded.")
 
 class Configuration:
     """docstring for Configuration."""
@@ -65,6 +93,13 @@ class Configuration:
         os.getenv("FLT_RETRAINING_INTERVAL_MINUTES", "120")
     )
     metric_chunk_size = parse_timedelta("now", str(retraining_interval_minutes) + "m")
+
+    # url for the prometheus host
+    
+    model_name = os.getenv("FLT_MODEL", list(model_module_map.keys())[0])
+    model_module = model_module_map[model_name]
+    
+    _LOGGER.info("Using model: \"%s\"", model_name)
 
     _LOGGER.info(
         "Metric data rolling training window size: %s", rolling_training_window_size
