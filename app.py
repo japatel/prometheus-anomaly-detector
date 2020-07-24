@@ -10,7 +10,6 @@ import tornado.web
 from prometheus_client import Gauge, generate_latest, REGISTRY
 from prometheus_api_client import PrometheusConnect, Metric
 from configuration import Configuration
-import model_lstm as model
 import schedule
 import sys
 
@@ -36,7 +35,7 @@ for metric in METRICS_LIST:
 
     for unique_metric in metric_init:
         PREDICTOR_MODEL_LIST.append(
-            model.MetricPredictor(
+            Configuration.model_module.MetricPredictor(
                 unique_metric,
                 rolling_data_window_size=Configuration.rolling_training_window_size,
             )
@@ -45,8 +44,6 @@ for metric in METRICS_LIST:
 # A gauge set for the predicted values
 GAUGE_DICT = dict()
 _LOGGER.info("Predictor model List size: %s", len(PREDICTOR_MODEL_LIST))
-# if len(PREDICTOR_MODEL_LIST) > 0:
-#     PREDICTOR_MODEL_LIST = np.random.choice(PREDICTOR_MODEL_LIST, 1).tolist()
 for predictor in PREDICTOR_MODEL_LIST:
     unique_metric = predictor.metric
     label_list = list(unique_metric.label_config.keys())
@@ -59,7 +56,6 @@ for predictor in PREDICTOR_MODEL_LIST:
         )
 
 _LOGGER.info("Gauge disct size: %s", len(GAUGE_DICT))
-
 class MainHandler(tornado.web.RequestHandler):
     """Tornado web request handler."""
 
