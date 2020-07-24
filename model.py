@@ -1,8 +1,10 @@
 """doctsring for packages."""
-import datetime
+from datetime import datetime, timedelta
 import logging
 import pandas
 from fbprophet import Prophet
+from fbprophet.diagnostics import cross_validation
+from fbprophet.diagnostics import performance_metrics
 from prometheus_api_client import Metric
 
 # Set up logging
@@ -22,13 +24,26 @@ class MetricPredictor:
         """Initialize the Metric object."""
         self.metric = Metric(metric, rolling_data_window_size)
 
-    def train(self, metric_data=None, prediction_duration=15):
+    def train(self, metric_data=None, prediction_duration=15, oldest_data_datetime=datetime(1970,1,1), check_perf=False):
         """Train the Prophet model and store the predictions in predicted_df."""
         prediction_freq = "1MIN"
+
+        if isinstance(
+            oldest_data_datetime, datetime
+        ):
+            type_of_oldest_data_datetime = "Is datetime.datetime"
+
+        if isinstance(
+            oldest_data_datetime, timedelta
+        ):
+            type_of_oldest_data_datetime = "Is datetime.timedelta"
+
+        _LOGGER.info( "Oldest Data date: %s %s", oldest_data_datetime, type_of_oldest_data_datetime)
+
         # convert incoming metric to Metric Object
         if metric_data:
             # because the rolling_data_window_size is set, this df should not bloat
-            self.metric += Metric(metric_data)
+            self.metric += Metric(metric_data, oldest_data_datetime=oldest_data_datetime)
 
         # Don't really need to store the model, as prophet models are not retrainable
         # But storing it as an example for other models that can be retrained
@@ -39,10 +54,22 @@ class MetricPredictor:
         _LOGGER.info(
             "training data range: %s - %s", self.metric.start_time, self.metric.end_time
         )
-        # _LOGGER.info("training data end time: %s", self.metric.end_time)
+
+        _LOGGER.info(
+            "Metric Values : %s", self.metric.metric_values
+        )
+
         _LOGGER.debug("begin training")
 
-        self.model.fit(self.metric.metric_values)
+        df_fit = self.model.fit(self.metric.metric_values)
+
+        if check_perf:
+            df_cv = cross_validation(df_fit, "24 hours", initial="2 days", period="12 hours")
+            df_cv.head()
+            df_p = performance_metrics(df_cv)
+
+            _LOGGER.info("Performance data: %s %s", self.metric.metric_name, df_p)
+
         future = self.model.make_future_dataframe(
             periods=int(prediction_duration),
             freq=prediction_freq,

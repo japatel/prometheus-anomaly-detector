@@ -61,10 +61,14 @@ class Configuration:
     )
 
     # How often should the anomaly detector retrain the model (in minutes)
-    retraining_interval_minutes = int(
+    retraining_interval_minutes = int (
         os.getenv("FLT_RETRAINING_INTERVAL_MINUTES", "120")
     )
     metric_chunk_size = parse_timedelta("now", str(retraining_interval_minutes) + "m")
+
+    port = int (os.getenv("PORT", "8088"))
+
+    check_perf = bool (int(os.getenv("FLT_CHECK_PERF", "0")))
 
     _LOGGER.info(
         "Metric data rolling training window size: %s", rolling_training_window_size
