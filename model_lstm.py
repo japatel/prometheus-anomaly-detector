@@ -48,7 +48,7 @@ class MetricPredictor:
         train_y = np.asarray(train_y)
 
         train_x = train_x.reshape(train_x.shape[0], 1, train_x.shape[1])
-        return train_x, train_y
+        return train_x.astype(np.float32), train_y.astype(np.float32)
 
     def get_model(self, lstm_cell_count, dense_cell_count):
         """Build the model."""
@@ -104,6 +104,7 @@ class MetricPredictor:
         model.compile(loss='mean_squared_error', optimizer='adam')
         model.fit(data_x, data_y, epochs=50, batch_size=512)
         data_test = metric_values_np[-self.number_of_features:, 1]
+        data_test = data_test.astype(np.float32)
         forecast_values = []
         prev_value = data_test[-1]
         for i in range(int(prediction_duration)):

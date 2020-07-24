@@ -10,11 +10,6 @@ import tornado.web
 from prometheus_client import Gauge, generate_latest, REGISTRY
 from prometheus_api_client import PrometheusConnect, Metric
 from configuration import Configuration
-from scipy.stats import boxcox
-from scipy.special import inv_boxcox
-from fbprophet.diagnostics import cross_validation
-from fbprophet.diagnostics import performance_metrics
-import model
 import schedule
 import sys
 
@@ -33,6 +28,7 @@ pc = PrometheusConnect(
     disable_ssl=True,
 )
 
+_LOGGER.info("Metric List size: %s", len(METRICS_LIST))
 for metric in METRICS_LIST:
     # Initialize a predictor for all metrics first
     _LOGGER.info("Metric List read: %s", metric)
@@ -41,7 +37,7 @@ for metric in METRICS_LIST:
 
     for unique_metric in metric_init:
         PREDICTOR_MODEL_LIST.append(
-            model.MetricPredictor(
+            Configuration.model_module.MetricPredictor(
                 unique_metric,
                 rolling_data_window_size=Configuration.rolling_training_window_size,
             )
@@ -51,6 +47,7 @@ _LOGGER.info("PREDICTOR_MODEL_LIST: %s", PREDICTOR_MODEL_LIST)
 
 # A gauge set for the predicted values
 GAUGE_DICT = dict()
+_LOGGER.info("Predictor model List size: %s", len(PREDICTOR_MODEL_LIST))
 for predictor in PREDICTOR_MODEL_LIST:
     unique_metric = predictor.metric
     label_list = list(unique_metric.label_config.keys())
@@ -62,6 +59,7 @@ for predictor in PREDICTOR_MODEL_LIST:
             label_list,
         )
 
+_LOGGER.info("Gauge dict size: %s", len(GAUGE_DICT))
 class MainHandler(tornado.web.RequestHandler):
     """Tornado web request handler."""
 
