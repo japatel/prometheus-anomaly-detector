@@ -28,6 +28,7 @@ pc = PrometheusConnect(
     disable_ssl=True,
 )
 
+_LOGGER.info("Metric List size: %s", len(METRICS_LIST))
 for metric in METRICS_LIST:
     # Initialize a predictor for all metrics first
     current_start_time =  datetime.now() - Configuration.current_data_window_size
@@ -43,6 +44,9 @@ for metric in METRICS_LIST:
 
 # A gauge set for the predicted values
 GAUGE_DICT = dict()
+_LOGGER.info("Predictor model List size: %s", len(PREDICTOR_MODEL_LIST))
+# if len(PREDICTOR_MODEL_LIST) > 0:
+#     PREDICTOR_MODEL_LIST = np.random.choice(PREDICTOR_MODEL_LIST, 1).tolist()
 for predictor in PREDICTOR_MODEL_LIST:
     unique_metric = predictor.metric
     label_list = list(unique_metric.label_config.keys())
@@ -53,6 +57,8 @@ for predictor in PREDICTOR_MODEL_LIST:
             predictor.model_description,
             label_list,
         )
+
+_LOGGER.info("Gauge disct size: %s", len(GAUGE_DICT))
 
 class MainHandler(tornado.web.RequestHandler):
     """Tornado web request handler."""
