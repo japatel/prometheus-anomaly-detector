@@ -12,6 +12,7 @@ from prometheus_api_client import PrometheusConnect, Metric
 from configuration import Configuration
 import schedule
 import sys
+import pickle
 
 # Set up logging
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class MainHandler(tornado.web.RequestHandler):
     async def get(self):
         """Fetch and publish metric values asynchronously."""
         # update metric value on every request and publish the metric
+        pass
         for predictor_model in self.settings["model_list"]:
             # get the current metric value so that it can be compared with the
             # predicted values
@@ -166,7 +168,7 @@ def make_app(data_queue):
     )
 
 
-def train_model(initial_run=False, data_queue=None):
+def train_model(initial_run=False):
     """Train the machine learning model."""
     for predictor_model in PREDICTOR_MODEL_LIST:
         metric_to_predict = predictor_model.metric
@@ -216,8 +218,30 @@ def train_model(initial_run=False, data_queue=None):
 
         predictor_model.predicted_df["size"] = predictor_model_size
 
-    _LOGGER.info("Queue size: %s", data_queue.qsize())
+    try:
+        with open( "predictor_model_list.p", "wb" ) as f:
+            pickle.dump(PREDICTOR_MODEL_LIST, f)
+    except pickle.PickleError as e:
+        raise e
+
+
+def build_predictions(data_queue=None):
+    for predictor_model in PREDICTOR_MODEL_LIST:
+        predictor_model.build_prediction_df(Configuration.retraining_interval_minutes)
     data_queue.put(PREDICTOR_MODEL_LIST)
+
+
+def load_models(data_queue=None):
+    """Train the machine learning model."""
+        
+    _PREDICTOR_MODEL_LIST = None
+    try:
+        with open( "predictor_model_list.p", "rb" ) as f:
+            _PREDICTOR_MODEL_LIST = pickle.load( f )
+        PREDICTOR_MODEL_LIST = _PREDICTOR_MODEL_LIST
+        build_predictions(data_queue)
+    except pickle.UnpicklingError as e:
+        raise e
 
 
 if __name__ == "__main__":
@@ -225,7 +249,8 @@ if __name__ == "__main__":
     predicted_model_queue = Queue()
 
     # Initial run to generate metrics, before they are exposed
-    train_model(initial_run=True, data_queue=predicted_model_queue)
+    train_model(initial_run=True)
+    load_models(data_queue=predicted_model_queue)
 
 
     # Set up the tornado web app
@@ -237,9 +262,7 @@ if __name__ == "__main__":
     server_process.start()
 
     # Schedule the model training
-    schedule.every(Configuration.retraining_interval_minutes).minutes.do(
-        train_model, initial_run=False, data_queue=predicted_model_queue
-    )
+    schedule.every(Configuration.retraining_interval_minutes).minutes.do(load_models, data_queue=predicted_model_queue)
     _LOGGER.info(
         "Will retrain model every %s minutes", Configuration.retraining_interval_minutes
     )

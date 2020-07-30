@@ -84,6 +84,30 @@ class MetricPredictor:
         _LOGGER.debug(forecast)
         _LOGGER.info(forecast.memory_usage(deep=True))
 
+    def build_prediction_df(self, prediction_duration=15):
+        """Train the Prophet model and store the predictions in predicted_df."""
+        prediction_freq = "1MIN"
+
+        _LOGGER.info(
+            "training data range: %s - %s", self.metric.start_time, self.metric.end_time
+        )
+        # _LOGGER.info("training data end time: %s", self.metric.end_time)
+        _LOGGER.debug("begin training")
+
+        future = self.model.make_future_dataframe(
+            periods=int(prediction_duration),
+            freq=prediction_freq,
+            include_history=False,
+        )
+        forecast = self.model.predict(future)
+        forecast["timestamp"] = forecast["ds"]
+        forecast = forecast[["timestamp", "yhat", "yhat_lower", "yhat_upper"]]
+        forecast = forecast.set_index("timestamp")
+        self.predicted_df = forecast
+
+        _LOGGER.debug(forecast)
+        _LOGGER.info(forecast.memory_usage(deep=True))
+
     def predict_value(self, prediction_datetime):
         """Return the predicted value of the metric for the prediction_datetime."""
         nearest_index = self.predicted_df.index.get_loc(
