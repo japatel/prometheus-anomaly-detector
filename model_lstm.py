@@ -1,5 +1,6 @@
 """doctsring for packages."""
 import logging
+from datetime import datetime, timedelta
 from prometheus_api_client import Metric
 from keras.models import Sequential
 from keras.layers import Dense
@@ -59,11 +60,11 @@ class MetricPredictor:
         model.add(Dense(1))
         return model
 
-    def train(self, metric_data=None, prediction_duration=15):
+    def train(self, metric_data=None, prediction_duration=15, oldest_data_datetime=datetime(1970,1,1), check_perf=False):
         """Train the model."""
         if metric_data:
             # because the rolling_data_window_size is set, this df should not bloat
-            self.metric += Metric(metric_data)
+            self.metric += Metric(metric_data, oldest_data_datetime=oldest_data_datetime)
 
         # normalising
         metric_values_np = self.metric.metric_values.values

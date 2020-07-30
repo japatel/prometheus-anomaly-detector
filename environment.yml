@@ -19,3 +19,7 @@ dependencies:
       - scikit-learn
       - plotly
       - scipy
+      - tensorflow==2.2.0
+      - tensorflow-estimator==2.2.0
+      - tensorboard==2.2.2
+      - tensorboard-plugin-wit==1.7.0
