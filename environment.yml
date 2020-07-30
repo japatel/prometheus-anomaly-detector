@@ -18,3 +18,4 @@ dependencies:
       - keras
       - scikit-learn
       - plotly
+      - scipy

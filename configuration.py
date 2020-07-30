@@ -89,13 +89,15 @@ class Configuration:
     )
 
     # How often should the anomaly detector retrain the model (in minutes)
-    retraining_interval_minutes = int(
+    retraining_interval_minutes = int (
         os.getenv("FLT_RETRAINING_INTERVAL_MINUTES", "120")
     )
     metric_chunk_size = parse_timedelta("now", str(retraining_interval_minutes) + "m")
 
-    # url for the prometheus host
-    
+    port = int (os.getenv("PORT", "8088"))
+
+    check_perf = bool (int(os.getenv("FLT_CHECK_PERF", "0")))
+
     model_name = os.getenv("FLT_MODEL", list(model_module_map.keys())[0])
     model_module = model_module_map[model_name]
     

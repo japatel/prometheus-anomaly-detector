@@ -45,6 +45,7 @@ class MetricPredictor:
         train_y = np.roll(data[:, 1], -self.number_of_features)
         train_y = train_y - train_yt
         train_y = train_y[:train_y.shape[0] - self.number_of_features]
+        train_y = np.asarray(train_y)
 
         train_x = train_x.reshape(train_x.shape[0], 1, train_x.shape[1])
         return train_x.astype(np.float32), train_y.astype(np.float32)
