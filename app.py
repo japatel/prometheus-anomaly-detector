@@ -45,11 +45,9 @@ for metric in METRICS_LIST:
             )
         )
 
-_LOGGER.info("PREDICTOR_MODEL_LIST: %s", PREDICTOR_MODEL_LIST)
 
 # A gauge set for the predicted values
 GAUGE_DICT = dict()
-_LOGGER.info("Predictor model List size: %s", len(PREDICTOR_MODEL_LIST))
 for predictor in PREDICTOR_MODEL_LIST:
     unique_metric = predictor.metric
     label_list = list(unique_metric.label_config.keys())
@@ -61,7 +59,6 @@ for predictor in PREDICTOR_MODEL_LIST:
             label_list,
         )
 
-_LOGGER.info("Gauge dict size: %s", len(GAUGE_DICT))
 class MainHandler(tornado.web.RequestHandler):
     """Tornado web request handler."""
 
@@ -84,14 +81,6 @@ class MainHandler(tornado.web.RequestHandler):
             current_end_time = datetime.now()
 
             anomaly = 0
-
-            _LOGGER.info(
-                "MatricName = %s, label_config = %s, start_time = %s, end_time = %s",
-                predictor_model.metric.metric_name,
-                predictor_model.metric.label_config,
-                current_start_time,
-                current_end_time
-            )
 
             prediction_data_size = 0
             metric_name = predictor_model.metric.metric_name
@@ -263,12 +252,15 @@ if __name__ == "__main__":
         "Will retrain model every %s minutes", Configuration.retraining_interval_minutes
     )
 
-    count = 0
+    count = 1
     while True:
         count += count
-        if count >= 40:
-            _LOGGER.info("Job details: %s %s %s", schedule.job_func, schedule.next_run, predicted_model_queue.qsize())
-            count = 0
+        if count > ((Configuration.retraining_interval_minutes * 60) + 60) and schedule.idle_seconds() <= 0:
+            _LOGGER.info("Restart training schedule %s %s", count, schedule.idle_seconds())
+            schedule.every(Configuration.retraining_interval_minutes).minutes.do(
+                train_model, initial_run=False, data_queue=predicted_model_queue
+            )
+            count = 1
         schedule.run_pending()
         time.sleep(1)
 
