@@ -22,9 +22,11 @@ import json
 import hashlib
 
 
+logger = logging.getLogger(__name__)
+
 def dumps_model(model):    
     if isinstance(model, model_prophet.MetricPredictor):
-        logger.debug("Marshal {0} object {1}".format(model_prophet.MetricPredictor.__name__, model.id))
+        logger.debug("Marshal {module}.{cls} object {oiu}".format(module=model_prophet.__name__, cls=model_prophet.MetricPredictor.__name__, oiu=id(model)))
         try:
             return pickle.dumps(model)
         except Exceptions as e:
@@ -37,7 +39,7 @@ def loads_model(cls, data):
     if issubclass(cls, model_prophet.MetricPredictor):
         try:
             model = pickle.loads(data)
-            logger.debug("Unmarshal as {0} object {1}".format(model_prophet.MetricPredictor.__name__, model.id))
+            logger.debug("Unmarshal as {module}.{cls} object {oiu}".format(module=model_prophet.__name__, cls=model_prophet.MetricPredictor.__name__, oiu=id(model)))
             return model
         except Exceptions as e:
             raise e
@@ -91,7 +93,6 @@ def load_model_list():
         with open("predictor_model_list.json", "r") as f:
             data = f.read()
             x_list = json.loads(data)
-            # x_txt = dict(zip(itertools.starmap(uuid.uuid4, itertools.repeat([])), x_list))
     except Exception as e:
         raise e
     
