@@ -54,7 +54,7 @@ def dump_model_list(l):
         obj = value
         cls_name = None
         if isinstance(obj, model_prophet.MetricPredictor):
-            cls_name = "fourier"
+            cls_name = "prophet"
         else:
             raise NotImplementedError("Unknown model type cannot be identified")
 
@@ -111,7 +111,7 @@ def load_model_list():
         if hashlib.md5(data).hexdigest() != md5:
             raise Exception("checksum does not match")
 
-        if cls_name == "fourier":
+        if cls_name == "prophet":
             cls = model_prophet.MetricPredictor
         else:
             raise NotImplementedError("Model class cannot be mapped to serializer")
