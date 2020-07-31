@@ -17,14 +17,14 @@ import sys
 import pickle
 import uuid
 import itertools
-import model as model_fourier
+import model as model_prophet
 import json
 import hashlib
 
 
 def dumps_model(model):    
-    if isinstance(model, model_fourier.MetricPredictor):
-        logger.debug("Marshal model_fourier.MetricPredictor object {0}".format(model.id))
+    if isinstance(model, model_prophet.MetricPredictor):
+        logger.debug("Marshal {0} object {1}".format(model_prophet.MetricPredictor.__name__, model.id))
         try:
             return pickle.dumps(model)
         except Exceptions as e:
@@ -34,10 +34,10 @@ def dumps_model(model):
 
 
 def loads_model(cls, data):
-    if issubclass(cls, model_fourier.MetricPredictor):
+    if issubclass(cls, model_prophet.MetricPredictor):
         try:
             model = pickle.loads(data)
-            logger.debug("Unmarshal model_fourier.MetricPredictor object {0}".format(model.id))
+            logger.debug("Unmarshal as {0} object {1}".format(model_prophet.MetricPredictor.__name__, model.id))
             return model
         except Exceptions as e:
             raise e
@@ -53,7 +53,7 @@ def dump_model_list(l):
     for (key, value) in x.items():
         obj = value
         cls_name = None
-        if isinstance(obj, model_fourier.MetricPredictor):
+        if isinstance(obj, model_prophet.MetricPredictor):
             cls_name = "fourier"
         else:
             raise NotImplementedError("Unknown model type cannot be identified")
@@ -112,7 +112,7 @@ def load_model_list():
             raise Exception("checksum does not match")
 
         if cls_name == "fourier":
-            cls = model_fourier.MetricPredictor
+            cls = model_prophet.MetricPredictor
         else:
             raise NotImplementedError("Model class cannot be mapped to serializer")
 
