@@ -13,6 +13,7 @@ from configuration import Configuration
 import schedule
 import sys
 import pickle
+from model_marshal import dump_model_list, load_model_list
 
 # Set up logging
 _LOGGER = logging.getLogger(__name__)
@@ -218,11 +219,8 @@ def train_model(initial_run=False):
 
         predictor_model.predicted_df["size"] = predictor_model_size
 
-    try:
-        with open( "predictor_model_list.p", "wb" ) as f:
-            pickle.dump(PREDICTOR_MODEL_LIST, f)
-    except pickle.PickleError as e:
-        raise e
+    
+    dump_model_list(PREDICTOR_MODEL_LIST)
 
 
 def build_predictions(data_queue=None):
@@ -236,9 +234,7 @@ def load_models(data_queue=None):
         
     _PREDICTOR_MODEL_LIST = None
     try:
-        with open( "predictor_model_list.p", "rb" ) as f:
-            _PREDICTOR_MODEL_LIST = pickle.load( f )
-        PREDICTOR_MODEL_LIST = _PREDICTOR_MODEL_LIST
+        PREDICTOR_MODEL_LIST = load_model_list()
         build_predictions(data_queue)
     except pickle.UnpicklingError as e:
         raise e
