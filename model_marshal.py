@@ -28,7 +28,8 @@ def dumps_model(model):
     if isinstance(model, model_prophet.MetricPredictor):
         logger.debug("Marshal {module}.{cls} object {oiu}".format(module=model_prophet.__name__, cls=model_prophet.MetricPredictor.__name__, oiu=id(model)))
         try:
-            return pickle.dumps(model)
+            data = model.dumps()
+            return data
         except Exceptions as e:
             raise e
     else:
@@ -38,10 +39,10 @@ def dumps_model(model):
 def loads_model(cls, data):
     if issubclass(cls, model_prophet.MetricPredictor):
         try:
-            model = pickle.loads(data)
-            logger.debug("Unmarshal as {module}.{cls} object {oiu}".format(module=model_prophet.__name__, cls=model_prophet.MetricPredictor.__name__, oiu=id(model)))
-            return model
-        except Exceptions as e:
+            obj = model_prophet.MetricPredictor.loads(data)
+            logger.debug("Unmarshal as {module}.{cls} object {oiu}".format(module=model_prophet.__name__, cls=model_prophet.MetricPredictor.__name__, oiu=id(obj)))
+            return obj
+        except Exception as e:
             raise e
     else:
         raise NotImplementedError("Unknown model type cannot be unmarshalled")
@@ -52,8 +53,8 @@ def dump_model_list(l):
     x = dict(zip(itertools.starmap(uuid.uuid4, itertools.repeat([])), l))
     x_txt = dict()
 
-    for (key, value) in x.items():
-        obj = value
+    for (key, (metric, predictor_model)) in x.items():
+        obj = predictor_model
         cls_name = None
         if isinstance(obj, model_prophet.MetricPredictor):
             cls_name = "prophet"
@@ -65,7 +66,11 @@ def dump_model_list(l):
             "name": "{0}.p".format(key.hex),
             "class": cls_name,
             "size": len(data),
-            "md5": hashlib.md5(data).hexdigest()
+            "md5": hashlib.md5(data).hexdigest(),
+            "metric": {
+                "metric_name": metric.metric_name,
+                "label_config": metric.label_config,
+            },            
         }
         # saving marshaled data instead of the object
         x[key] = data
@@ -86,6 +91,10 @@ def dump_model_list(l):
         except Exception as e:
             raise e
 
+"""
+returns: List[(MetricInfo, Predictor)]
+where MetricInfo is dict with metric_name and label_config attributes from Prometheus Metric object
+"""
 def load_model_list():
     x = list()
     x_list = list()
@@ -101,6 +110,8 @@ def load_model_list():
         fsize = value["size"]
         cls_name = value["class"]
         md5 = value["md5"]
+        metric_name = value["metric"]["metric_name"]
+        label_config = value["metric"]["label_config"]
         cls = None
 
         try:
@@ -118,9 +129,10 @@ def load_model_list():
             raise NotImplementedError("Model class cannot be mapped to serializer")
 
         model = loads_model(cls, data)
+        metric = {"metric_name": metric_name, "label_config": label_config}
         if model is None:
             raise Exception
-        x.append(model)
+        x.append((metric, model))
 
     logger.info("successfully unmarshalled model list")
     return x

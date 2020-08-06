@@ -1,132 +1,57 @@
-"""docstring for packages."""
+"""Metric Predictor/Anomaly detector
+Overall mode:
+# 1. Load/Update trained predictor Models
+# 2. Discover/Update/Obsolete time series (unique combination of name and metric label/values dictionary).
+# 3. Create new/Delete obsolete Gauges to cover all TS. (Gauge can be linked to multiple TS)
+# 4. Load/Update/Trunkate value series for each discovered TS. Assign predictor Model for each Value Series (based on TS matching)
+# 5. Update predictions of all models
+# 6. Update Gauge values with relevant TS and available predictions
+"""
 import time
 import os
-import logging
-from datetime import datetime, timedelta
-from multiprocessing import Process, Queue
-from queue import Empty as EmptyQueueException
-import tornado.ioloop
-import tornado.web
-from prometheus_client import Gauge, generate_latest, REGISTRY
-from prometheus_api_client import PrometheusConnect, Metric
-from configuration import Configuration
-import schedule
 import sys
-import pickle
-from model_marshal import dump_model_list, load_model_list
-
-# Set up logging
-_LOGGER = logging.getLogger(__name__)
-
-METRICS_LIST = Configuration.metrics_list
-_LOGGER.info("Metric List: %s", METRICS_LIST)
-
-# list of ModelPredictor Objects shared between processes
-PREDICTOR_MODEL_LIST = list()
-
-pc = PrometheusConnect(
-    url=Configuration.prometheus_url,
-    headers=Configuration.prom_connect_headers,
-    disable_ssl=True,
-)
-
-_LOGGER.info("Metric List size: %s", len(METRICS_LIST))
-for metric in METRICS_LIST:
-    # Initialize a predictor for all metrics first
-    _LOGGER.info("Metric List read: %s", metric)
-    current_start_time =  datetime.now() - Configuration.current_data_window_size
-    metric_init = pc.get_metric_range_data(metric_name=metric, start_time=current_start_time, end_time=datetime.now())
-
-    for unique_metric in metric_init:
-        PREDICTOR_MODEL_LIST.append(
-            Configuration.model_module.MetricPredictor(
-                unique_metric,
-                rolling_data_window_size=Configuration.rolling_training_window_size,
-            )
-        )
+import logging
+import uuid
+from datetime import (datetime, timedelta)
+from flask import (Flask, make_response)
+from prometheus_client import (Gauge, generate_latest, CollectorRegistry)
+from prometheus_api_client import (PrometheusConnect, Metric, MetricsList)
+from configuration import Configuration
+from sched import scheduler
+from model_marshal import (dump_model_list, load_model_list)
+from threading import (RLock, Semaphore, Lock, Thread)
 
 
-# A gauge set for the predicted values
-GAUGE_DICT = dict()
-for predictor in PREDICTOR_MODEL_LIST:
-    unique_metric = predictor.metric
-    label_list = list(unique_metric.label_config.keys())
-    label_list.append("value_type")
-    if unique_metric.metric_name not in GAUGE_DICT:
-        GAUGE_DICT[unique_metric.metric_name] = Gauge(
-            unique_metric.metric_name + "_" + predictor.model_name,
-            predictor.model_description,
-            label_list,
-        )
+db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
+db_ts = dict()  # Map[Hash[MetricInfo], {"labels", "generation"}]
+db_values = dict()  # Map[Hash[MetricInfo], {"metric", "tsKey", "modelKey"}]
+db_models = dict()  # Map[UUID, {"predictor", "labels"}]
+registry = CollectorRegistry()
+s = scheduler(time.time, time.sleep)
+pc = PrometheusConnect(url=Configuration.prometheus_url, headers=Configuration.prom_connect_headers, disable_ssl=True,)
+app = Flask(__name__)
 
-class MainHandler(tornado.web.RequestHandler):
-    """Tornado web request handler."""
 
-    def initialize(self, data_queue):
-        """Check if new predicted values are available in the queue before the get request."""
-        try:
-            model_list = data_queue.get_nowait()
-            self.settings["model_list"] = model_list
-        except EmptyQueueException:
-            pass
+def ts_hash(all_labels, metric_name=None, label_config=None):
+    """[Compute unique hash for TS]
+    Args:
+        all_labels ([dict]): [combined label_config with __name__ label]
+        metric_name ([string], optional): [label name. If provided added as __name__ label]. Defaults to None.
+        label_config ([dict], optional): [label_config without __name__]. Defaults to None.
 
-    async def get(self):
-        """Fetch and publish metric values asynchronously."""
-        # update metric value on every request and publish the metric
-        pass
-        for predictor_model in self.settings["model_list"]:
-            # get the current metric value so that it can be compared with the
-            # predicted values
-            current_start_time =  datetime.now() - Configuration.current_data_window_size
-            current_end_time = datetime.now()
+    Returns:
+        [int]: [unique TS hash]
+    """
+    hash_dict = {}
+    hash_dict.update(all_labels)
+    if metric_name is not None:
+        hash_dict.update({"__name__": metric_name})
+    if label_config is not None:
+        hash_dict.update(label_config)
+    return hash(frozenset(hash_dict.items()))
 
-            anomaly = 0
 
-            prediction_data_size = 0
-            metric_name = predictor_model.metric.metric_name
-            prediction = predictor_model.predict_value(datetime.now())
-
-            if "size" in prediction:
-               prediction_data_size = prediction['size']
-
-            current_metric_data = pc.get_metric_range_data(
-                metric_name=predictor_model.metric.metric_name,
-                label_config=predictor_model.metric.label_config,
-                start_time=current_start_time,
-                end_time=current_end_time,
-            )
-
-            # Check for all the columns available in the prediction
-            # and publish the values for each of them
-            for column_name in list(prediction.columns):
-                GAUGE_DICT[metric_name].labels(
-                    **predictor_model.metric.label_config, value_type=column_name
-                ).set(prediction[column_name][0])
-
-            if current_metric_data and hasattr(current_metric_data, "__len__"):
-                current_metric_value = Metric(current_metric_data[0])
-                uncertainty_range = prediction["yhat_upper"][0] - prediction["yhat_lower"][0]
-                current_value = current_metric_value.metric_values.loc[current_metric_value.metric_values.ds.idxmax(), "y"]
-
-                if ( current_value > prediction["yhat_upper"][0] ):
-                    anomaly = ( current_value - prediction["yhat_upper"][0] ) / uncertainty_range
-                elif ( current_value < prediction["yhat_lower"][0] ):
-                    anomaly = ( current_value - prediction["yhat_lower"][0] ) / uncertainty_range
-
-                # create a new time series that has value_type=anomaly
-                # this value is 1 if an anomaly is found 0 if not
-                GAUGE_DICT[metric_name].labels(
-                    **predictor_model.metric.label_config, value_type="anomaly"
-                ).set(anomaly)
-
-            GAUGE_DICT[metric_name].labels(
-                **predictor_model.metric.label_config, value_type="size"
-            ).set(prediction_data_size)
-
-        self.write(generate_latest(REGISTRY).decode("utf-8"))
-        self.set_header("Content-Type", "text; charset=utf-8")
-
-def get_size(obj, seen=None):
+def get_metric_size(obj, seen=None):
     # From https://goshippo.com/blog/measure-real-size-any-python-object/
     # Recursively finds size of objects
     size = sys.getsizeof(obj)
@@ -139,131 +64,257 @@ def get_size(obj, seen=None):
     # self-referential objects
     seen.add(obj_id)
     if isinstance(obj, dict):
-        size += sum([get_size(v, seen) for v in obj.values()])
-        size += sum([get_size(k, seen) for k in obj.keys()])
+        size += sum([get_metric_size(v, seen) for v in obj.values()])
+        size += sum([get_metric_size(k, seen) for k in obj.keys()])
     elif hasattr(obj, '__dict__'):
-        size += get_size(obj.__dict__, seen)
+        size += get_metric_size(obj.__dict__, seen)
     elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
-        size += sum([get_size(i, seen) for i in obj])
+        size += sum([get_metric_size(i, seen) for i in obj])
     return size
 
-def make_app(data_queue):
-    """Initialize the tornado web app."""
-    return tornado.web.Application(
-        [
-            (r"/metrics", MainHandler, dict(data_queue=data_queue)),
-            (r"/anomaly", MainHandler, dict(data_queue=data_queue)),
-            (r"/", MainHandler, dict(data_queue=data_queue)),
-        ]
-    )
 
-
-def train_model(initial_run=False):
-    """Train the machine learning model."""
-    for predictor_model in PREDICTOR_MODEL_LIST:
-        metric_to_predict = predictor_model.metric
-        data_start_time = datetime.now() - Configuration.metric_chunk_size
-        oldest_data_datetime = (datetime.now() + timedelta(days=1)) - Configuration.rolling_training_window_size
-
-        if initial_run:
-            data_start_time = (
-                oldest_data_datetime
-            )
-
-        data_end_time = datetime.now()
-
-        _LOGGER.info(
-            "Training MatricName = %s, label_config = %s, start_time = %s, end_time = %s",
-            metric_to_predict.metric_name,
-            metric_to_predict.label_config,
-            data_start_time,
-            data_end_time
-        )
-
-        # Download new metric data from prometheus
-        new_metric_data = pc.get_metric_range_data(
-            metric_name=metric_to_predict.metric_name,
-            label_config=metric_to_predict.label_config,
-            start_time=data_start_time,
-            end_time=data_end_time,
-        )[0]
-
-        _LOGGER.info("Train after getting new data")
-
-        # Train the new model
-        start_time = datetime.now()
-        predictor_model.train(
-            new_metric_data, Configuration.retraining_interval_minutes,
-            oldest_data_datetime, Configuration.check_perf
-        )
-        _LOGGER.info(
-            "Total Training time taken = %s, for metric: %s %s",
-            str(datetime.now() - start_time),
-            metric_to_predict.metric_name,
-            metric_to_predict.label_config,
-        )
-
-        predictor_model_size = get_size(predictor_model.metric)
-        _LOGGER.info("Predictor Model size: %s", predictor_model_size)
-
-        predictor_model.predicted_df["size"] = predictor_model_size
-
-    
-    dump_model_list(PREDICTOR_MODEL_LIST)
-
-
-def build_predictions(data_queue=None):
-    for predictor_model in PREDICTOR_MODEL_LIST:
-        predictor_model.build_prediction_df(Configuration.retraining_interval_minutes)
-    data_queue.put(PREDICTOR_MODEL_LIST)
-
-
-def load_models(data_queue=None):
-    """Train the machine learning model."""
+def update_models():
+    """[Loads Predictor modes]
+        When each model is loaded a new unique UUID is assigned to it.
         
-    _PREDICTOR_MODEL_LIST = None
+        Model record:
+        index (uuid):
+        {
+            "predictor" (MetricPredictor):
+            "labels" (dict): label_config ++ {"__name__": metric_name}
+        }
+    Raises:
+        e: [description]
+    """
     try:
-        PREDICTOR_MODEL_LIST = load_model_list()
-        build_predictions(data_queue)
-    except pickle.UnpicklingError as e:
+        local_predictor_model_list = load_model_list()
+        for (model, predictor) in local_predictor_model_list:
+            # h = ts_hash(metric_name=model["metric_name"], label_config=model["label_config"])
+            labels = {}
+            labels.update(model["label_config"])
+            labels.update({"__name__": model["metric_name"]})
+            record_dict = {
+                "predictor": predictor, 
+                "labels": labels                 
+            }
+            db_models.update({str(uuid.uuid4()): record_dict})
+    except Exception as e:
         raise e
 
 
-if __name__ == "__main__":
-    # Queue to share data between the tornado server and the model training
-    predicted_model_queue = Queue()
+def update_tss():
+    """Updates TimeSerie Store. Discover new TS and remove obsolete TS. 
+    TS data are not stored in this record. Values record is used to store TS data.
+    
+    index (hash):
+    {
+        "labels" (dict): 
+        "generation" (int):
+    }
+    metric (dict): Single record of a list returned by get_metric_range_data()
+    generation (int): last update cycle when metric existed
+    Raises:
+        e: [description]
+    """
+    now = datetime.now()
+    try:
+        for metric in Configuration.metrics_list:
+            current_start_time =  now - Configuration.current_data_window_size
+            metric_init = pc.get_metric_range_data(metric_name=metric, start_time=current_start_time, end_time=now)
+            
+            hash_metric_list = list(map(lambda metric: (ts_hash(all_labels=metric["metric"]), {"labels": metric["metric"], "generation": 0}), metric_init))
+            db_ts.update(hash_metric_list)
+    except Exception as e:
+        raise e
 
-    # Initial run to generate metrics, before they are exposed
-    train_model(initial_run=True)
-    load_models(data_queue=predicted_model_queue)
+
+def update_values():
+    """Update db_values for every TS.
+    If Values record exists then updates its metric. If Values record does not exist then its created
+    When Values record is created its predictor Model selected. Value record is associated with its TS.
+    
+    index (hash):
+    {
+        "metric" (Metric): first item of return value of MetricsList(get_metric_range_data())
+        "ts" (tsKey): key of db_ts
+        "model" (modelKey): key of db_models
+    }
+
+    Raises:
+        Exception: [description]
+        Exception: [description]
+        Exception: [description]
+        e: [description]
+    """
+    now = datetime.now()
+    # try:
+    for (h, ts) in db_ts.items():
+        if h in db_values.keys():
+            current_start_time =  now - Configuration.current_data_window_size
+            record = db_values[h]
+            metric = record["metric"]
+            metric_data = pc.get_metric_range_data(metric_name=metric.metric_name, label_config=metric.label_config, start_time=current_start_time, end_time=now)
+            metrics = MetricsList(metric_data)
+            if len(metrics) != 1:
+                raise Exception("There can be only one")
+            new_metric = metrics[0] + metric
+            
+            trunk_metric = Metric(new_metric, current_start_time) # This throws some exception really fast but this would have solved the problem.
+            db_values[h]["metric"] = trunk_metric
+        else:    
+            current_start_time =  now - Configuration.current_data_window_size
+            metric_name = ts["labels"]["__name__"]
+            labels = dict()
+            labels.update(ts["labels"])
+            del labels["__name__"]
+            metric_data = pc.get_metric_range_data(metric_name=metric_name, label_config=labels, start_time=current_start_time, end_time=now)
+            metrics = MetricsList(metric_data)
+            if len(metrics) != 1:
+                raise Exception("There can be only one")
+            
+            models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
+            if len(models) != 1:
+                    raise Exception("There can be only one")
+            
+            record = {
+                "metric": metrics[0],
+                "ts": h,
+                "model": models[0][0]
+            }
+            db_values.update({h: record})
+    # except Exception as e:
+    #     raise e
 
 
-    # Set up the tornado web app
-    app = make_app(predicted_model_queue)
-    app.listen(Configuration.port)
-    server_process = Process(target=tornado.ioloop.IOLoop.instance().start)
+def update_gauges(registry):
+    """Create Gauges for new TimeSeries. Delete Gauges for obsolete or non-existing TS
+        Assocoates Gauge record with Values record.
+        Method attempts to create a Gauge for each TS. If Gauge exists only associates the gauge record with the value
+        
+        Exception during gauge creation exception indicates that the Gauge has been created already. So method attempts to filter
+        all gauges with current metric name. There must be only one other gauge registered with same metric name.
+        
+        Gauge record:
+        index (uuid):
+        {
+                "collector" (Gauge): Gauge collector object registered in Registry. It contains all labels.
+                "values" (set[valueKey]): list of db_values Keys that Gauge reports
+        }
 
-    # Start up the server to expose the metrics.
-    server_process.start()
+    Args:
+        registry (registry.CollectorRegistry): Prometheus registry used to register Gauge collectors
+        
+    Raises:
+        Exception: When more than one or none gauges were found during the search (see method description)
+    """    
+    for (h, ts) in db_ts.items():
+        labels = dict()
+        labels.update(ts["labels"])
+        del labels["__name__"]
+        label_list = list(labels.keys())
+        label_list.append("value_type")
+        try:
+            gauge = Gauge(name=ts["labels"]["__name__"], documentation="Forecasted value", labelnames=label_list, registry=registry)
+            uid = str(uuid.uuid4())
+            record = {
+                "collector": gauge,
+                "values": set([h]),
+            }
+            db_gauges.update({uid: record})
+            (gauge)
+        except ValueError as e:
+            # looking for already created gauge by metric name
+            gauges = list(filter(lambda gauge: gauge[1]["collector"].describe()[0].name == ts["labels"]["__name__"], db_gauges.items()))
+            if len(gauges) != 1:
+                raise Exception("There can be only one")
+            uid, record = gauges[0]                    
+            record["values"].add(h)
+            db_gauges.update({uid: record})
 
-    # Schedule the model training
-    schedule.every(Configuration.retraining_interval_minutes).minutes.do(load_models, data_queue=predicted_model_queue)
-    _LOGGER.info(
-        "Will retrain model every %s minutes", Configuration.retraining_interval_minutes
-    )
 
-    count = 1
-    while True:
-        count += count
-        if count > ((Configuration.retraining_interval_minutes * 60) + 60) and schedule.idle_seconds() <= 0:
-            _LOGGER.info("Restart training schedule %s %s", count, schedule.idle_seconds())
-            schedule.every(Configuration.retraining_interval_minutes).minutes.do(
-                train_model, initial_run=False, data_queue=predicted_model_queue
-            )
-            count = 1
-        schedule.run_pending()
-        time.sleep(1)
+def update_gauge_values():
+    """Updates values of all gauges
+        Iterate through all gauges and sets ["yhat", "yhat_upper", "yhat_lower", "size", "original_value"]
+    """
+    now = datetime.now()
+    for (h, gauge_record) in db_gauges.items():
+        gauge = gauge_record["collector"]
+        for value_key in gauge_record["values"]:
+            values = db_values[value_key]
+            metric = values["metric"]
+            predictor = db_models[values["model"]]["predictor"]
+            # predictor.build_prediction_df()
+            prediction = predictor.predict_value(now)
+            for column_name in list(prediction.columns):
+                gauge.labels(
+                    **metric.label_config,
+                    value_type=column_name,
+                ).set(prediction[column_name][0])
 
-    # join the server process in case the main process ends
-    _LOGGER.info("Scheduler stopped")
-    server_process.join()
+            uncertainty_range = prediction["yhat_upper"][0] - prediction["yhat_lower"][0]
+            current_value = metric.metric_values.loc[metric.metric_values.ds.idxmax(), "y"]
+
+            anomaly = 0
+            if ( current_value > prediction["yhat_upper"][0] ):
+                anomaly = ( current_value - prediction["yhat_upper"][0] ) / uncertainty_range
+            elif ( current_value < prediction["yhat_lower"][0] ):
+                anomaly = ( current_value - prediction["yhat_lower"][0] ) / uncertainty_range
+
+            gauge.labels(
+                **metric.label_config, value_type="anomaly"
+            ).set(anomaly)
+            
+            gauge.labels(
+                **metric.label_config, value_type="size"
+            ).set(get_metric_size(metric))
+            
+            gauge.labels(
+                **metric.label_config, value_type="original_value"
+            ).set(current_value)
+
+
+def update_model_predictions():
+    for (h, model_record) in db_models.items():
+        predictor = model_record["predictor"]
+        predictor.build_prediction_df()
+
+
+def update_gauges_proc():
+    update_gauges(registry)
+    s.enter(300, 1, update_gauges_proc, [])
+
+
+def update_values_proc():
+    update_values()
+    s.enter(15, 1, update_values_proc, [])
+
+
+def update_gauge_values_proc():
+    update_gauge_values()
+    s.enter(60, 1, update_gauge_values_proc, [])
+
+
+def update_model_predictions_proc():
+    update_model_predictions()
+    s.enter(300, 1, update_model_predictions_proc, [])
+
+
+@app.route('/')
+def hello():
+    metrics = generate_latest(registry).decode("utf-8")
+    response = flask.make_response(metrics, 200)
+    response.mimetype = "text/plain"
+    return response
+
+
+if __name__ == '__main__':
+    update_models()
+    update_tss()
+    update_gauges_proc()
+    update_values_proc()
+    update_model_predictions_proc()
+    update_gauge_values_proc()    
+    
+    Thread(target=lambda: s.run(blocking=True), name="Scheduler").start()
+    
+    app.run()
