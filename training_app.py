@@ -13,16 +13,18 @@ from configuration import Configuration
 import schedule
 import sys
 import pickle
-from model_marshal import dump_model_list, load_model_list
 import itertools
 
-# Set up logging
+# Replace this for FS serialiser
+# from model_marshal import dump_model_list, load_model_list
+from model_marshal_redis import dump_model_list, load_model_list
+
+
 _LOGGER = logging.getLogger(__name__)
 
 METRICS_LIST = Configuration.metrics_list
 _LOGGER.info("Metric List: %s", METRICS_LIST)
 
-# list of ModelPredictor Objects shared between processes
 PREDICTOR_MODEL_LIST = list()
 
 pc = PrometheusConnect(
@@ -81,8 +83,6 @@ def train_model():
         )
 
         # _LOGGER.info("Predictor Model size: %s", predictor_model_size)
-    
-    
 
 
 def build_predictions(data_queue=None):
@@ -92,11 +92,6 @@ def build_predictions(data_queue=None):
 
 
 if __name__ == "__main__":
-    # Queue to share data between the tornado server and the model training
-
-
-    # Initial run to generate metrics, before they are exposed
     train_model()
     dump_model_list(PREDICTOR_MODEL_LIST)
-    # load_models(data_queue=predicted_model_queue)
 

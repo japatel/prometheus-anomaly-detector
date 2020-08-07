@@ -99,23 +99,21 @@ def dump_model_list(l, r=None):
 returns: List[(MetricInfo, Predictor)]
 where MetricInfo is dict with metric_name and label_config attributes from Prometheus Metric object
 """
-def load_model_dict(r=None):
+def load_model_list(r=None):
     
     if r is None:
         pool = redis.ConnectionPool(host='localhost', port=6379, db=0)
         r = redis.Redis(connection_pool=pool)
         
-    x = dict()
-    x_keys = list()
-    x_values = list()
+    x = list()
+    x_list = list()
     
     pipe = r.pipeline()
     for key in r.scan_iter("manifest:*"):
         pipe.get(key)
-        x_keys.append(uuid.uuid4(key))
     res = pipe.execute()    
     
-    x_values = dict(itertools.zip(x_keys, map(json.loads, res)))
+    x_list = list(map(json.loads, res))
     
     for value in x_list:
         h = value["name"]

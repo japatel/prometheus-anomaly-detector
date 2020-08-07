@@ -18,8 +18,11 @@ from prometheus_client import (Gauge, generate_latest, CollectorRegistry)
 from prometheus_api_client import (PrometheusConnect, Metric, MetricsList)
 from configuration import Configuration
 from sched import scheduler
-from model_marshal import (dump_model_list, load_model_list)
 from threading import (RLock, Semaphore, Lock, Thread)
+
+# Replace this for FS serialiser
+# from model_marshal import (dump_model_list, load_model_list)
+from model_marshal_redis import (dump_model_list, load_model_list)
 
 
 db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
