@@ -26,6 +26,7 @@ db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
 db_ts = dict()  # Map[Hash[MetricInfo], {"labels", "generation"}]
 db_values = dict()  # Map[Hash[MetricInfo], {"metric", "tsKey", "modelKey"}]
 db_models = dict()  # Map[UUID, {"predictor", "labels"}]
+scheduler_thread = None
 registry = CollectorRegistry()
 s = scheduler(time.time, time.sleep)
 pc = PrometheusConnect(url=Configuration.prometheus_url, headers=Configuration.prom_connect_headers, disable_ssl=True,)
@@ -297,24 +298,38 @@ def update_gauge_values_proc():
 def update_model_predictions_proc():
     update_model_predictions()
     s.enter(300, 1, update_model_predictions_proc, [])
+    
+def update_models_proc():
+    update_models()
+    # s.enter(300, 1, update_models_proc, [])
+
+
+def update_tss_proc():
+    update_tss()
+    s.enter(300, 1, update_tss_proc, [])
+
+    
+def init_proc():
+    update_models_proc()
+    update_tss_proc()
+    update_gauges_proc()    
+    update_values_proc()
+    update_model_predictions_proc()
+    update_gauge_values_proc()
 
 
 @app.route('/')
-def hello():
+def root():
     metrics = generate_latest(registry).decode("utf-8")
-    response = flask.make_response(metrics, 200)
+    response = make_response(metrics, 200)
     response.mimetype = "text/plain"
     return response
 
+@app.before_first_request
+def before_first_request_proc():
+    s.enter(0, 1, init_proc, [])
+    scheduler_thread = Thread(target=lambda: s.run(blocking=True), name="Scheduler").start()
 
 if __name__ == '__main__':
-    update_models()
-    update_tss()
-    update_gauges_proc()
-    update_values_proc()
-    update_model_predictions_proc()
-    update_gauge_values_proc()    
-    
-    Thread(target=lambda: s.run(blocking=True), name="Scheduler").start()
-    
+    before_first_request_proc()
     app.run()

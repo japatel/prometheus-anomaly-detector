@@ -56,14 +56,17 @@ class MetricPredictor:
             freq=prediction_freq,
             include_history=False,
         )
-        _LOGGER.debug(future)
+        
+        # trim prediction timestamps to begin with current timedate, instead of model fit horizon
+        future = future.tail(prediction_duration_min * 4 + 4)
+        
         forecast = self._model.predict(future)
         forecast["timestamp"] = forecast["ds"]
         forecast = forecast[["timestamp", "yhat", "yhat_lower", "yhat_upper"]]
         forecast = forecast.set_index("timestamp")
         self.predicted_df = forecast
 
-        _LOGGER.debug(forecast)
+        _LOGGER.debug(forecast.tail(prediction_duration_min * 4 + 4).to_string())
         _LOGGER.info(forecast.memory_usage(deep=True))
 
     def predict_value(self, prediction_datetime):
