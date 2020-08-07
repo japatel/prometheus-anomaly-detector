@@ -92,7 +92,6 @@ class Configuration:
     retraining_interval_minutes = int (
         os.getenv("FLT_RETRAINING_INTERVAL_MINUTES", "120")
     )
-    metric_chunk_size = parse_timedelta("now", str(retraining_interval_minutes) + "m")
 
     port = int (os.getenv("PORT", "8088"))
 
