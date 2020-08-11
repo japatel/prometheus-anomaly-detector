@@ -63,7 +63,6 @@ def get_metric_size(obj, seen=None):
         size += sum([get_metric_size(i, seen) for i in obj])
     return size
 
-
 def update_models(local_predictor_model_list=None):
     """[Loads Predictor modes]
         When each model is loaded a new unique UUID is assigned to it.
@@ -395,3 +394,4 @@ def before_first_request_proc():
 if __name__ == '__main__':
     before_first_request_proc()
     app.run()
+    
