@@ -166,14 +166,17 @@ def update_values():
             labels = dict()
             labels.update(ts["labels"])
             del labels["__name__"]
+                   
+            models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
+            if len(models) == 0:
+                logger.warning("No models matching labels for [Metric:{h}] metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric_name, label_config=labels))
+                continue
+            
             metric_data = pc.get_metric_range_data(metric_name=metric_name, label_config=labels, start_time=current_start_time, end_time=now)
             metrics = MetricsList(metric_data)
             if len(metrics) != 1:
                 raise Exception("There can be only one")
-            
-            models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
-            if len(models) == 0:
-                    raise Exception("There must be at least one predictor")
+                        
             # pick the most recent model
             models.sort(key=lambda model: model[1].get("timestamp", datetime.fromtimestamp(0)), reverse=True)
             predictor = models[0][0]
@@ -266,6 +269,9 @@ def update_gauge_values():
         gauge = gauge_record["collector"]
         logger.debug("Set values in gauge [Gauge:{gid}], link [TS:{tsid}]".format(gid=h, tsid=gauge_record["values"]))
         for value_key in gauge_record["values"]:
+            if not value_key in db_values.keys():
+                logger.warning("[Value:{value_key}] does not exist for Gauge [Gauge:{gid}], link [TS:{tsid}]".format(value_key=value_key, gid=h, tsid=gauge_record["values"]))
+                continue
             values = db_values[value_key]
             metric = values["metric"]
             predictor = db_models[values["model"]]["predictor"]
