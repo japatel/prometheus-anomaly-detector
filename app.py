@@ -12,6 +12,7 @@ import os
 import sys
 import logging
 import uuid
+import re
 from datetime import (datetime, timedelta)
 from flask import (Flask, make_response)
 from prometheus_client import (Gauge, generate_latest, CollectorRegistry)
@@ -19,12 +20,14 @@ from prometheus_api_client import (PrometheusConnect, Metric, MetricsList)
 from configuration import Configuration
 from sched import scheduler
 from threading import (RLock, Semaphore, Lock, Thread)
+import redis
+from label_hash import ts_hash
 
 # Replace this for FS serialiser
 # from model_marshal import (dump_model_list, load_model_list)
 from model_marshal_redis import (dump_model_list, load_model_list)
 
-
+logger = logging.getLogger(__name__)
 db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
 db_ts = dict()  # Map[Hash[MetricInfo], {"labels", "generation"}]
 db_values = dict()  # Map[Hash[MetricInfo], {"metric", "tsKey", "modelKey"}]
@@ -33,26 +36,10 @@ scheduler_thread = None
 registry = CollectorRegistry()
 s = scheduler(time.time, time.sleep)
 pc = PrometheusConnect(url=Configuration.prometheus_url, headers=Configuration.prom_connect_headers, disable_ssl=True,)
+pool = redis.ConnectionPool(host='localhost', port=6379, db=0)
+r = redis.Redis(connection_pool=pool)
+p_watches = r.pubsub()
 app = Flask(__name__)
-
-
-def ts_hash(all_labels, metric_name=None, label_config=None):
-    """[Compute unique hash for TS]
-    Args:
-        all_labels ([dict]): [combined label_config with __name__ label]
-        metric_name ([string], optional): [label name. If provided added as __name__ label]. Defaults to None.
-        label_config ([dict], optional): [label_config without __name__]. Defaults to None.
-
-    Returns:
-        [int]: [unique TS hash]
-    """
-    hash_dict = {}
-    hash_dict.update(all_labels)
-    if metric_name is not None:
-        hash_dict.update({"__name__": metric_name})
-    if label_config is not None:
-        hash_dict.update(label_config)
-    return hash(frozenset(hash_dict.items()))
 
 
 def get_metric_size(obj, seen=None):
@@ -77,7 +64,7 @@ def get_metric_size(obj, seen=None):
     return size
 
 
-def update_models():
+def update_models(local_predictor_model_list=None):
     """[Loads Predictor modes]
         When each model is loaded a new unique UUID is assigned to it.
         
@@ -91,23 +78,25 @@ def update_models():
         e: [description]
     """
     try:
-        local_predictor_model_list = load_model_list()
-        for (model, predictor) in local_predictor_model_list:
+        if local_predictor_model_list is None:
+            local_predictor_model_list = load_model_list(hash_include=list(db_ts.keys()))
+        for (key, model, predictor) in local_predictor_model_list:
             # h = ts_hash(metric_name=model["metric_name"], label_config=model["label_config"])
             labels = {}
             labels.update(model["label_config"])
             labels.update({"__name__": model["metric_name"]})
             record_dict = {
                 "predictor": predictor, 
-                "labels": labels                 
+                "labels": labels,
+                "timestamp": model["timestamp"],
             }
-            db_models.update({str(uuid.uuid4()): record_dict})
+            db_models.update({key: record_dict})
     except Exception as e:
         raise e
 
 
 def update_tss():
-    """Updates TimeSerie Store. Discover new TS and remove obsolete TS. 
+    """Updates db_ts Store. Discover new TS and remove obsolete TS. 
     TS data are not stored in this record. Values record is used to store TS data.
     
     index (hash):
@@ -120,6 +109,7 @@ def update_tss():
     Raises:
         e: [description]
     """
+    logger.info("Updating TS")
     now = datetime.now()
     try:
         for metric in Configuration.metrics_list:
@@ -127,9 +117,12 @@ def update_tss():
             metric_init = pc.get_metric_range_data(metric_name=metric, start_time=current_start_time, end_time=now)
             
             hash_metric_list = list(map(lambda metric: (ts_hash(all_labels=metric["metric"]), {"labels": metric["metric"], "generation": 0}), metric_init))
+            logger.info("new TS: {tss}".format(tss=dict(hash_metric_list)))
             db_ts.update(hash_metric_list)
+            logger.info("TS stats: {tss}".format(tss=db_ts))
     except Exception as e:
         raise e
+    
 
 
 def update_values():
@@ -150,10 +143,12 @@ def update_values():
         Exception: [description]
         e: [description]
     """
+    logger.info("Updating Values")
     now = datetime.now()
-    # try:
     for (h, ts) in db_ts.items():
+        logger.debug("Updating [TS:{h}], labels:{labels}".format(h=h, labels=ts["labels"]))
         if h in db_values.keys():
+            # TS is already tracked by a Values record in db_values
             current_start_time =  now - Configuration.current_data_window_size
             record = db_values[h]
             metric = record["metric"]
@@ -165,6 +160,7 @@ def update_values():
             
             trunk_metric = Metric(new_metric, current_start_time) # This throws some exception really fast but this would have solved the problem.
             db_values[h]["metric"] = trunk_metric
+            logger.debug("Update and truncate [Metric:{h}] horizon:{current_start_time} metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric.metric_name, label_config=metric.label_config, current_start_time=current_start_time))
         else:    
             current_start_time =  now - Configuration.current_data_window_size
             metric_name = ts["labels"]["__name__"]
@@ -177,17 +173,40 @@ def update_values():
                 raise Exception("There can be only one")
             
             models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
-            if len(models) != 1:
-                    raise Exception("There can be only one")
-            
+            if len(models) == 0:
+                    raise Exception("There must be at least one predictor")
+            # pick the most recent model
+            models.sort(key=lambda model: model[1].get("timestamp", datetime.fromtimestamp(0)), reverse=True)
+            predictor = models[0][0]
+            # predictor.build_prediction_df()
             record = {
                 "metric": metrics[0],
                 "ts": h,
-                "model": models[0][0]
+                "model": predictor,
             }
             db_values.update({h: record})
-    # except Exception as e:
-    #     raise e
+            logger.debug("Add [Metric:{h}] horizon:{current_start_time} metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric_name, label_config=labels, current_start_time=current_start_time))
+
+
+def update_values_models():
+    """[Update predictions of all models]
+
+    Raises:
+        Exception: [description]
+    """
+    logger.info("Updating [Value] models")
+    for (h, record) in db_values.items():
+            # find all models with hash(labels) same as valuesKey
+            models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
+            # pick the most recent model
+            models.sort(key=lambda model: model[1].get("timestamp", datetime.fromtimestamp(0)), reverse=True)
+            if len(models) == 0:
+                raise Exception("There must be at least one predictor")
+            predictor = models[0][1]["predictor"]
+            if record["model"] != models[0][0]:
+                logger.debug("Updating [Value:{h}] model to [Model:{mid}]".format(h=h, mid=models[0][0]))
+                predictor.build_prediction_df()
+                db_values[h]["model"] = models[0][0]
 
 
 def update_gauges(registry):
@@ -210,7 +229,8 @@ def update_gauges(registry):
         
     Raises:
         Exception: When more than one or none gauges were found during the search (see method description)
-    """    
+    """
+    logger.info("Updating [Gauge] dictionary")
     for (h, ts) in db_ts.items():
         labels = dict()
         labels.update(ts["labels"])
@@ -218,14 +238,14 @@ def update_gauges(registry):
         label_list = list(labels.keys())
         label_list.append("value_type")
         try:
-            gauge = Gauge(name=ts["labels"]["__name__"], documentation="Forecasted value", labelnames=label_list, registry=registry)
-            uid = str(uuid.uuid4())
+            gauge = Gauge(name=ts["labels"]["__name__"], documentation="Forecasted value", labelnames=label_list, registry=registry)            
+            uid = str(uuid.uuid4())            
             record = {
                 "collector": gauge,
                 "values": set([h]),
             }
             db_gauges.update({uid: record})
-            (gauge)
+            logger.debug("New gauge {mname} [Gauge:{gid}], link [TS:{tsid}]".format(mname=ts["labels"]["__name__"], gid=uid, tsid=db_gauges[uid]["values"]))
         except ValueError as e:
             # looking for already created gauge by metric name
             gauges = list(filter(lambda gauge: gauge[1]["collector"].describe()[0].name == ts["labels"]["__name__"], db_gauges.items()))
@@ -234,21 +254,24 @@ def update_gauges(registry):
             uid, record = gauges[0]                    
             record["values"].add(h)
             db_gauges.update({uid: record})
+            logger.debug("Update gauge {mname} [Gauge:{gid}], link [TS:{tsid}]".format(mname=ts["labels"]["__name__"], gid=uid, tsid=db_gauges[uid]["values"]))
 
 
 def update_gauge_values():
     """Updates values of all gauges
         Iterate through all gauges and sets ["yhat", "yhat_upper", "yhat_lower", "size", "original_value"]
     """
+    logger.info("Updating [Gauge] values")
     now = datetime.now()
     for (h, gauge_record) in db_gauges.items():
         gauge = gauge_record["collector"]
+        logger.debug("Set values in gauge [Gauge:{gid}], link [TS:{tsid}]".format(gid=h, tsid=gauge_record["values"]))
         for value_key in gauge_record["values"]:
             values = db_values[value_key]
             metric = values["metric"]
             predictor = db_models[values["model"]]["predictor"]
-            # predictor.build_prediction_df()
             prediction = predictor.predict_value(now)
+            logger.debug("Set values in gauge [Gauge:{gid}], link [TS:{tsid}], [Metric:{labels}]. Data:{data}".format(gid=h, tsid=value_key, labels=db_ts[values["ts"]]["labels"], data=prediction.to_dict()))
             for column_name in list(prediction.columns):
                 gauge.labels(
                     **metric.label_config,
@@ -266,8 +289,9 @@ def update_gauge_values():
 
             gauge.labels(
                 **metric.label_config, value_type="anomaly"
-            ).set(anomaly)
+            ).set(anomaly)            
             
+            size = get_metric_size(metric)
             gauge.labels(
                 **metric.label_config, value_type="size"
             ).set(get_metric_size(metric))
@@ -275,63 +299,98 @@ def update_gauge_values():
             gauge.labels(
                 **metric.label_config, value_type="original_value"
             ).set(current_value)
+            logger.debug("Set values in gauge [Gauge:{gid}], link [TS:{tsid}], [Metric:{labels}]. anomaly={anomaly}, size={size}, original_value={original_value}".format(gid=h, tsid=value_key, labels=db_ts[values["ts"]]["labels"], anomaly=anomaly, size=size, original_value=current_value))
 
 
 def update_model_predictions():
+    logger.info("Update predictions")
     for (h, model_record) in db_models.items():
         predictor = model_record["predictor"]
+        ts_h = ts_hash(all_labels=model_record["labels"])
+        logger.debug("Update prediction in [Model:{mid}], [Hash:{h}], labels:{labels}".format(mid=h, h=ts_h, labels=model_record["labels"]))
         predictor.build_prediction_df()
 
 
 def update_gauges_proc():
+    logger.info("Update gauges proc")
     update_gauges(registry)
     s.enter(300, 1, update_gauges_proc, [])
 
 
 def update_values_proc():
+    logger.info("Update values proc")
     update_values()
     s.enter(15, 1, update_values_proc, [])
 
 
 def update_gauge_values_proc():
+    logger.info("Update gauge values proc")
     update_gauge_values()
     s.enter(60, 1, update_gauge_values_proc, [])
 
 
 def update_model_predictions_proc():
+    logger.info("Update model predictions proc")
     update_model_predictions()
     s.enter(300, 1, update_model_predictions_proc, [])
     
 def update_models_proc():
+    logger.info("Update model proc")
     update_models()
+    update_values_models()
     # s.enter(300, 1, update_models_proc, [])
 
 
 def update_tss_proc():
+    logger.info("Update TS proc")
     update_tss()
     s.enter(300, 1, update_tss_proc, [])
 
     
 def init_proc():
-    update_models_proc()
+    """[Initiate all dictionaries and start all timers]
+    """    
     update_tss_proc()
+    update_models_proc()
     update_gauges_proc()    
     update_values_proc()
     update_model_predictions_proc()
     update_gauge_values_proc()
 
 
-@app.route('/')
+def watch_db_proc():
+    """[DB watching proc]
+    The routine infinitely monitors manifest key updates in Redis. Once a key is updated ("set") it (re-)loads the model
+    """
+    p_watches.psubscribe('__keyspace@0__:manifest:*')
+    while True:
+        for m in p_watches.listen():
+            if m["type"] == "pmessage" and m["data"].decode("utf-8") == "set":
+                original_pattern = m["channel"].decode("utf-8") 
+                pattern = re.compile("__keyspace@0__:manifest:(.*)")
+                ms = pattern.search(original_pattern)
+                key = ms.group(1).strip()
+                local_predictor_model_list = load_model_list([key], hash_include=list(db_ts.keys()))
+                # update_models(local_predictor_model_list=local_predictor_model_list)
+                s.enter(0, 1, update_models, [], kwargs={"local_predictor_model_list":local_predictor_model_list})
+                s.enter(0, 2, update_values_models, [])
+
+
+@app.route('/metrics', endpoint="metrics-canonical")
+@app.route('/', endpoint="metrics-root")
 def root():
     metrics = generate_latest(registry).decode("utf-8")
     response = make_response(metrics, 200)
     response.mimetype = "text/plain"
     return response
 
+
 @app.before_first_request
 def before_first_request_proc():
     s.enter(0, 1, init_proc, [])
     scheduler_thread = Thread(target=lambda: s.run(blocking=True), name="Scheduler").start()
+    redis_watcher_thread = Thread(target=watch_db_proc, name="DBWatcher").start()
+
 
 if __name__ == '__main__':
     before_first_request_proc()
