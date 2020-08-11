@@ -370,15 +370,17 @@ def watch_db_proc():
     p_watches.psubscribe('__keyspace@0__:manifest:*')
     while True:
         for m in p_watches.listen():
-            if m["type"] == "pmessage" and m["data"].decode("utf-8") == "set":
-                original_pattern = m["channel"].decode("utf-8") 
+            if m["type"] == "pmessage" and m["data"].decode("utf-8") == "set":                
+                original_pattern = m["channel"].decode("utf-8")
                 pattern = re.compile("__keyspace@0__:manifest:(.*)")
                 ms = pattern.search(original_pattern)
                 key = ms.group(1).strip()
+                logger.info("Updated Redis [Manifest:{key}]".format(key=key))
                 local_predictor_model_list = load_model_list([key], hash_include=list(db_ts.keys()))
                 # update_models(local_predictor_model_list=local_predictor_model_list)
                 s.enter(0, 1, update_models, [], kwargs={"local_predictor_model_list":local_predictor_model_list})
                 s.enter(0, 2, update_values_models, [])
+                s.enter(0, 3, update_gauge_values_proc, [])
 
 
 @app.route('/metrics', endpoint="metrics-canonical")
