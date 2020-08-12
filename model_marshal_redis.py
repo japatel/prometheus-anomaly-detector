@@ -21,6 +21,9 @@ import model as model_prophet
 import json
 import hashlib
 import redis
+import re
+from packaging import version
+from label_hash import ts_hash
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +53,8 @@ def loads_model(cls, data):
 
 
 def dump_model_list(l, r=None):
+    now = datetime.now()
+    timestamp = time.mktime(now.timetuple())
     if r is None:
         pool = redis.ConnectionPool(host='localhost', port=6379, db=0)
         r = redis.Redis(connection_pool=pool)
@@ -75,7 +80,8 @@ def dump_model_list(l, r=None):
             "metric": {
                 "metric_name": metric.metric_name,
                 "label_config": metric.label_config,
-            },            
+            },
+            "timestamp": timestamp,
         }
         # saving marshaled data instead of the object
         x[key] = data
@@ -99,46 +105,76 @@ def dump_model_list(l, r=None):
 returns: List[(MetricInfo, Predictor)]
 where MetricInfo is dict with metric_name and label_config attributes from Prometheus Metric object
 """
-def load_model_list(r=None):
-    
+def load_model_list(keys=None, r=None, hash_include=None):
+    """[summary]
+
+    Args:
+        keys ([type], optional): [description]. Defaults to None.
+        r ([type], optional): [description]. Defaults to None.
+
+    Returns:
+        [type]: [description]
+    """
     if r is None:
         pool = redis.ConnectionPool(host='localhost', port=6379, db=0)
         r = redis.Redis(connection_pool=pool)
         
     x = list()
-    x_list = list()
     
-    pipe = r.pipeline()
-    for key in r.scan_iter("manifest:*"):
-        pipe.get(key)
-    res = pipe.execute()    
-    
-    x_list = list(map(json.loads, res))
-    
-    for value in x_list:
-        h = value["name"]
-        fsize = value["size"]
-        cls_name = value["class"]
-        md5 = value["md5"]
-        metric_name = value["metric"]["metric_name"]
-        label_config = value["metric"]["label_config"]
-        cls = None
-
-        data = r.get('model:{key}'.format(key=h))
-
-        if hashlib.md5(data).hexdigest() != md5:
-            raise Exception("checksum does not match")
-
-        if cls_name == "prophet":
-            cls = model_prophet.MetricPredictor
-        else:
-            raise NotImplementedError("Model class cannot be mapped to serializer")
-
-        model = loads_model(cls, data)
-        metric = {"metric_name": metric_name, "label_config": label_config}
+    # pipe = r.pipeline()
+    if keys is None:
+        keys = r.scan_iter("manifest:*")
+        pattern = re.compile("manifest:(.*)")
+        keys = list(map(lambda b_key: pattern.search(b_key.decode("utf-8")).group(1).strip(), keys))
+        
+    for key in keys:
+        # original_key=key.decode("utf-8")
+        # pattern = re.compile("manifest:(.*)")
+        # ms = pattern.search(key)
+        # item_key = ms.group(1).strip()
+        manifest, model = load_model(key, r, hash_include=hash_include)
         if model is None:
-            raise Exception
-        x.append((metric, model))
-
-    logger.info("successfully unmarshalled model list")
+            contine
+        metric_name = manifest["metric"]["metric_name"]
+        label_config = manifest["metric"]["label_config"]
+        timestamp =  datetime.fromtimestamp(manifest.get("timestamp", 0))
+        metric = {"metric_name": metric_name, "label_config": label_config, "timestamp": timestamp}
+        x.append((key, metric, model))
     return x
+        
+
+def load_model(key, r, hash_include=None):
+    pipe = r.pipeline()
+    pipe.get("manifest:{key}".format(key=key))
+    res = pipe.execute()    
+    x_list = list(map(json.loads, res))
+    # x_list.sort(key=lambda manifest: datetime.fromtimestamp(manifest.get("timestamp", 0)))
+    manifest = x_list[0]
+    # v =  version.parse(manifest.get("version", "0.0.0"))
+    label_hash = ts_hash(metric_name=manifest["metric"]["metric_name"], label_config=manifest["metric"]["label_config"])
+    if hash_include is not None and not (label_hash in hash_include):
+        logger.debug("Skip loading model {h} ({metric_name}), label hash:{lh}".format(h = manifest["name"], metric_name=manifest["metric"]["metric_name"], lh=label_hash))
+        return manifest, None
+    h = manifest["name"]
+    fsize = manifest["size"]
+    cls_name = manifest["class"]
+    md5 = manifest["md5"]    
+    cls = None
+
+    data = r.get('model:{key}'.format(key=h))
+
+    if hashlib.md5(data).hexdigest() != md5:
+        raise Exception("checksum does not match")
+
+    if cls_name == "prophet":
+        cls = model_prophet.MetricPredictor
+    else:
+        raise NotImplementedError("Model class cannot be mapped to serializer")
+
+    model = loads_model(cls, data)
+    if model is None:
+        raise Exception
+    
+    logger.debug("Loaded model {h} ({metric_name}), label hash:{lh}, metric:{metric}".format(h = manifest["name"], metric_name=manifest["metric"]["metric_name"], lh=label_hash, metric=manifest["metric"]))
+    
+    return manifest, model
