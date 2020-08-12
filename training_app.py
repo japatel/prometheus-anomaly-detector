@@ -39,6 +39,7 @@ for metric in METRICS_LIST:
     _LOGGER.info("Metric List read: %s", metric)
     current_start_time =  datetime.now() - Configuration.current_data_window_size
     metric_init = pc.get_metric_range_data(metric_name=metric, start_time=current_start_time, end_time=datetime.now())
+    _LOGGER.info("Mertic loop: %s", metric_init)
     
     metric_list = map(lambda metric: Metric(metric, Configuration.rolling_training_window_size), metric_init)
     PREDICTOR_MODEL_LIST.extend(zip(metric_list, itertools.starmap(Configuration.model_module.MetricPredictor, itertools.repeat([]))))
@@ -48,6 +49,7 @@ def train_model():
     """Train the machine learning model.
     Traning interval rounds up to day starts (00h:00m:00s.00)
     """
+    _LOGGER.info("Train function: %s", PREDICTOR_MODEL_LIST)
     for (metric_to_predict, predictor_model) in PREDICTOR_MODEL_LIST:
         today = datetime(*datetime.now().timetuple()[:3])
         data_start_time = today - Configuration.rolling_training_window_size

@@ -11,4 +11,4 @@ RUN conda env create -f /tmp/environment.yml
 USER 1001
 
 # Ensure that assigned uid has entry in /etc/passwd.
-CMD ./set_uid.sh && /opt/conda/envs/prophet-env/bin/python ${APP_FILE}
+CMD ./set_uid.sh && /opt/conda/envs/prophet-env/bin/python ${TRAIN_APP_FILE} && /opt/conda/envs/prophet-env/bin/python ${APP_FILE}

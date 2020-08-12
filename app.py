@@ -24,6 +24,7 @@ from threading import (RLock, Semaphore, Lock, Thread)
 # from model_marshal import (dump_model_list, load_model_list)
 from model_marshal_redis import (dump_model_list, load_model_list)
 
+_LOGGER = logging.getLogger(__name__)
 
 db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
 db_ts = dict()  # Map[Hash[MetricInfo], {"labels", "generation"}]
@@ -320,7 +321,7 @@ def init_proc():
     update_gauge_values_proc()
 
 
-@app.route('/')
+@app.route('/anomaly')
 def root():
     metrics = generate_latest(registry).decode("utf-8")
     response = make_response(metrics, 200)
@@ -334,5 +335,5 @@ def before_first_request_proc():
 
 if __name__ == '__main__':
     before_first_request_proc()
-    app.run()
+    app.run(host='0.0.0.0', port=Configuration.port, debug=True)
     
