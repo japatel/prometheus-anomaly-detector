@@ -341,13 +341,13 @@ def update_values_proc():
 def update_gauge_values_proc():
     logger.info("Update gauge values proc")
     update_gauge_values()
-    s.enter(60, 1, update_gauge_values_proc, [])
+    s.enter(15, 1, update_gauge_values_proc, [])
 
 
 def update_model_predictions_proc():
     logger.info("Update model predictions proc")
     update_model_predictions()
-    s.enter(300, 1, update_model_predictions_proc, [])
+    s.enter(600, 1, update_model_predictions_proc, [])
     
 def update_models_proc():
     logger.info("Update model proc")
@@ -366,11 +366,11 @@ def init_proc():
     """[Initiate all dictionaries and start all timers]
     """    
     logger.info("Initial proc")
-    update_tss_proc()
-    update_gauges_proc()    
-    update_values_proc()
+    update_tss_proc()        
     update_models_proc()
     update_model_predictions_proc()
+    update_values_proc()
+    update_gauges_proc()
     update_gauge_values_proc()
     logger.info("Initial proc complete")
 
@@ -405,9 +405,9 @@ def root():
     return response
 
 
-def before_first_request_proc():    
+def before_first_request_proc():
+    s.enter(0, 1, init_proc, [])
     scheduler_thread = Thread(target=lambda: s.run(blocking=True), name="Scheduler").start()
-    s.enter(0, 0, init_proc, [])
     redis_watcher_thread = Thread(target=watch_db_proc, name="DBWatcher").start()
 
 
