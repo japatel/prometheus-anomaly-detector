@@ -29,7 +29,8 @@ import itertools
 from model_marshal_redis import (dump_model_list, load_model_list)
 
 logger = logging.getLogger(__name__)
-metric_generation = itertools.count()
+ts_generation = itertools.count()
+values_generation = itertools.count()
 db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
 db_ts = dict()  # Map[Hash[MetricInfo], {"labels", "generation"}]
 db_values = dict()  # Map[Hash[MetricInfo], {"metric", "tsKey", "modelKey"}]
@@ -112,7 +113,7 @@ def update_tss():
     """
     logger.info("Updating TS")
     now = datetime.now()
-    generation = next(metric_generation)
+    generation = next(ts_generation)
     try:
         for metric in Configuration.metrics_list:
             current_start_time =  now - Configuration.current_data_window_size
@@ -147,6 +148,7 @@ def update_values(models_include=None):
     """
     logger.info("Updating Values")
     now = datetime.now()
+    generation = next(values_generation)
     for (h, ts) in db_ts.items():
         logger.debug("Updating [TS:{h}], labels:{labels}".format(h=h, labels=ts["labels"]))
         if h in db_values.keys():
@@ -162,6 +164,7 @@ def update_values(models_include=None):
             
             trunk_metric = Metric(new_metric, current_start_time) # This throws some exception really fast but this would have solved the problem.
             db_values[h]["metric"] = trunk_metric
+            db_values[h]["generation"] = generation
             logger.debug("Update and truncate [Metric:{h}] horizon:{current_start_time} metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric.metric_name, label_config=metric.label_config, current_start_time=current_start_time))
         else:    
             current_start_time =  now - Configuration.current_data_window_size
@@ -192,6 +195,7 @@ def update_values(models_include=None):
                 "metric": metrics[0],
                 "ts": h,
                 "model": predictor,
+                "generation": generation
             }
             db_values.update({h: record})
             logger.debug("Add [Metric:{h}] horizon:{current_start_time} metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric_name, label_config=labels, current_start_time=current_start_time))
@@ -310,6 +314,21 @@ def update_gauge_values():
             gauge.labels(
                 **metric.label_config, value_type="size"
             ).set(get_metric_size(metric))
+            
+            size = get_metric_size(metric)
+            gauge.labels(
+                **metric.label_config, value_type="generation"
+            ).set(db_ts[values["ts"]]["generation"])
+            
+            size = get_metric_size(metric)
+            gauge.labels(
+                **metric.label_config, value_type="ts_generation"
+            ).set(db_ts[values["ts"]]["generation"])
+            
+            size = get_metric_size(metric)
+            gauge.labels(
+                **metric.label_config, value_type="values_generation"
+            ).set(values["generation"])
             
             gauge.labels(
                 **metric.label_config, value_type="original_value"
