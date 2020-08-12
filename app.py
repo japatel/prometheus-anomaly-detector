@@ -124,7 +124,7 @@ def update_tss():
     
 
 
-def update_values():
+def update_values(models_include=None):
     """Update db_values for every TS.
     If Values record exists then updates its metric. If Values record does not exist then its created
     When Values record is created its predictor Model selected. Value record is associated with its TS.
@@ -166,8 +166,12 @@ def update_values():
             labels = dict()
             labels.update(ts["labels"])
             del labels["__name__"]
+            
+            items = db_models.items()
+            if not models_include is None:
+                items = filter(lambda item: item[0] in models_include, items)
                    
-            models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
+            models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, items))
             if len(models) == 0:
                 logger.warning("No models matching labels for [Metric:{h}] metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric_name, label_config=labels))
                 continue
@@ -190,14 +194,17 @@ def update_values():
             logger.debug("Add [Metric:{h}] horizon:{current_start_time} metric_name:{metric_name}, label_config:{label_config}".format(h=h, metric_name=metric_name, label_config=labels, current_start_time=current_start_time))
 
 
-def update_values_models():
+def update_values_models(keys=None):
     """[Update predictions of all models]
 
     Raises:
         Exception: [description]
     """
     logger.info("Updating [Value] models")
-    for (h, record) in db_values.items():
+    items = db_values.items()
+    if not keys is None:
+        items = filter(lambda item: item[0] in keys, items)
+    for (h, record) in items:
             # find all models with hash(labels) same as valuesKey
             models = list(filter(lambda model: ts_hash(all_labels=model[1]["labels"]) == h, db_models.items()))
             # pick the most recent model
@@ -307,9 +314,12 @@ def update_gauge_values():
             logger.debug("Set values in gauge [Gauge:{gid}], link [TS:{tsid}], [Metric:{labels}]. anomaly={anomaly}, size={size}, original_value={original_value}".format(gid=h, tsid=value_key, labels=db_ts[values["ts"]]["labels"], anomaly=anomaly, size=size, original_value=current_value))
 
 
-def update_model_predictions():
+def update_model_predictions(keys=None):
     logger.info("Update predictions")
-    for (h, model_record) in db_models.items():
+    items = db_models.items()
+    if not keys is None:
+        items = filter(lambda item: item[0] in keys, items)
+    for (h, model_record) in items:
         predictor = model_record["predictor"]
         ts_h = ts_hash(all_labels=model_record["labels"])
         logger.debug("Update prediction in [Model:{mid}], [Hash:{h}], labels:{labels}".format(mid=h, h=ts_h, labels=model_record["labels"]))
@@ -355,12 +365,14 @@ def update_tss_proc():
 def init_proc():
     """[Initiate all dictionaries and start all timers]
     """    
+    logger.info("Initial proc")
     update_tss_proc()
-    update_models_proc()
     update_gauges_proc()    
     update_values_proc()
+    update_models_proc()
     update_model_predictions_proc()
     update_gauge_values_proc()
+    logger.info("Initial proc complete")
 
 
 def watch_db_proc():
@@ -377,10 +389,11 @@ def watch_db_proc():
                 key = ms.group(1).strip()
                 logger.info("Updated Redis [Manifest:{key}]".format(key=key))
                 local_predictor_model_list = load_model_list([key], hash_include=list(db_ts.keys()))
-                # update_models(local_predictor_model_list=local_predictor_model_list)
                 s.enter(0, 1, update_models, [], kwargs={"local_predictor_model_list":local_predictor_model_list})
-                s.enter(0, 2, update_values_models, [])
-                s.enter(0, 3, update_gauge_values_proc, [])
+                s.enter(0, 2, update_model_predictions, [[key]])
+                s.enter(0, 3, update_values, [[key]])                
+                s.enter(0, 4, update_values_models, [[key]])
+                s.enter(0, 5, update_gauge_values_proc, [])
 
 
 @app.route('/metrics', endpoint="metrics-canonical")
@@ -392,14 +405,14 @@ def root():
     return response
 
 
-@app.before_first_request
-def before_first_request_proc():
-    s.enter(0, 1, init_proc, [])
+def before_first_request_proc():    
     scheduler_thread = Thread(target=lambda: s.run(blocking=True), name="Scheduler").start()
+    s.enter(0, 0, init_proc, [])
     redis_watcher_thread = Thread(target=watch_db_proc, name="DBWatcher").start()
 
 
 if __name__ == '__main__':
+    logger.info("Application starting now")
     before_first_request_proc()
     app.run()
     
