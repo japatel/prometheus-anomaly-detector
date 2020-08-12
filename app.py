@@ -22,12 +22,14 @@ from sched import scheduler
 from threading import (RLock, Semaphore, Lock, Thread)
 import redis
 from label_hash import ts_hash
+import itertools
 
 # Replace this for FS serialiser
 # from model_marshal import (dump_model_list, load_model_list)
 from model_marshal_redis import (dump_model_list, load_model_list)
 
 logger = logging.getLogger(__name__)
+metric_generation = itertools.count()
 db_gauges = dict()  # Map[UUID, {"collector", ["valuesKey"]}]
 db_ts = dict()  # Map[Hash[MetricInfo], {"labels", "generation"}]
 db_values = dict()  # Map[Hash[MetricInfo], {"metric", "tsKey", "modelKey"}]
@@ -110,12 +112,13 @@ def update_tss():
     """
     logger.info("Updating TS")
     now = datetime.now()
+    generation = next(metric_generation)
     try:
         for metric in Configuration.metrics_list:
             current_start_time =  now - Configuration.current_data_window_size
             metric_init = pc.get_metric_range_data(metric_name=metric, start_time=current_start_time, end_time=now)
             
-            hash_metric_list = list(map(lambda metric: (ts_hash(all_labels=metric["metric"]), {"labels": metric["metric"], "generation": 0}), metric_init))
+            hash_metric_list = list(map(lambda metric: (ts_hash(all_labels=metric["metric"]), {"labels": metric["metric"], "generation": generation}), metric_init))
             logger.info("new TS: {tss}".format(tss=dict(hash_metric_list)))
             db_ts.update(hash_metric_list)
             logger.info("TS stats: {tss}".format(tss=db_ts))
