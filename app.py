@@ -301,24 +301,26 @@ def update_gauge_values():
             current_value = metric.metric_values.loc[metric.metric_values.ds.idxmax(), "y"]
 
             anomaly = 0
-            if ( current_value > prediction["yhat_upper"][0] ):
-                anomaly = ( current_value - prediction["yhat_upper"][0] ) / uncertainty_range
+            weighted_anomaly = 0
+            if ( current_value > prediction["yhat_upper"][0] ):                
+                weighted_anomaly = ( current_value - prediction["yhat_upper"][0] ) / uncertainty_range
+                anomaly = 1
             elif ( current_value < prediction["yhat_lower"][0] ):
-                anomaly = ( current_value - prediction["yhat_lower"][0] ) / uncertainty_range
+                weighted_anomaly = ( current_value - prediction["yhat_lower"][0] ) / uncertainty_range
+                anomaly = 1
 
             gauge.labels(
+                **metric.label_config, value_type="weighted_anomaly"
+            ).set(weighted_anomaly)
+            
+            gauge.labels(
                 **metric.label_config, value_type="anomaly"
-            ).set(anomaly)            
+            ).set(anomaly)
             
             size = get_metric_size(metric)
             gauge.labels(
                 **metric.label_config, value_type="size"
             ).set(get_metric_size(metric))
-            
-            size = get_metric_size(metric)
-            gauge.labels(
-                **metric.label_config, value_type="generation"
-            ).set(db_ts[values["ts"]]["generation"])
             
             size = get_metric_size(metric)
             gauge.labels(
