@@ -253,24 +253,30 @@ def update_gauges(registry):
         del labels["__name__"]
         label_list = list(labels.keys())
         label_list.append("value_type")
+
+        if len(ts["labels"]["__name__"].split(":")) == 3 and  ts["labels"]["__name__"].split(":")[0] == ts["labels"]["prd_name"] and ts["labels"]["__name__"].split(":")[2] == ts["labels"]["prd_pod"]:
+            gauge_metric_name = ts["labels"]["prd_name"] + ":" + ts["labels"]["__name__"].split(":")[1] + "_prophet:" + ts["labels"]["prd_pod"]
+        else:
+            gauge_metric_name = ts["labels"]["__name__"] + "_prophet"
+
         try:
-            gauge = Gauge(name=ts["labels"]["__name__"], documentation="Forecasted value", labelnames=label_list, registry=registry)            
+            gauge = Gauge(name=gauge_metric_name, documentation="Forecasted value", labelnames=label_list, registry=registry)            
             uid = str(uuid.uuid4())            
             record = {
                 "collector": gauge,
                 "values": set([h]),
             }
             db_gauges.update({uid: record})
-            logger.debug("New gauge {mname} [Gauge:{gid}], link [TS:{tsid}]".format(mname=ts["labels"]["__name__"], gid=uid, tsid=db_gauges[uid]["values"]))
+            logger.debug("New gauge {mname} [Gauge:{gid}], link [TS:{tsid}]".format(mname=gauge_metric_name, gid=uid, tsid=db_gauges[uid]["values"]))
         except ValueError as e:
             # looking for already created gauge by metric name
-            gauges = list(filter(lambda gauge: gauge[1]["collector"].describe()[0].name == ts["labels"]["__name__"], db_gauges.items()))
+            gauges = list(filter(lambda gauge: gauge[1]["collector"].describe()[0].name == gauge_metric_name, db_gauges.items()))
             if len(gauges) != 1:
                 raise Exception("There can be only one")
             uid, record = gauges[0]                    
             record["values"].add(h)
             db_gauges.update({uid: record})
-            logger.debug("Update gauge {mname} [Gauge:{gid}], link [TS:{tsid}]".format(mname=ts["labels"]["__name__"], gid=uid, tsid=db_gauges[uid]["values"]))
+            logger.debug("Update gauge {mname} [Gauge:{gid}], link [TS:{tsid}]".format(mname=gauge_metric_name, gid=uid, tsid=db_gauges[uid]["values"]))
 
 
 def update_gauge_values():
